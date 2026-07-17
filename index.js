@@ -1,5 +1,5 @@
 const express = require('express');
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fs = require('fs');
@@ -34,7 +34,7 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        browser: ['Ubuntu', 'Chrome', '20.0.04'],
+        browser: Browsers.ubuntu('Chrome'),
         logger: pino({ level: 'silent' })
     });
 
@@ -64,7 +64,8 @@ async function connectToWhatsApp() {
             console.log(`Conexión cerrada. Código de estado: ${statusCode}. Intentando reconectar: ${shouldReconnect}`);
 
             if (shouldReconnect) {
-                setTimeout(connectToWhatsApp, 5000);
+                // Timeout de 3 segundos para evitar bucles infinitos agresivos
+                setTimeout(connectToWhatsApp, 3000);
             } else {
                 console.log('Sesión cerrada voluntariamente por el usuario. Limpiando credenciales antiguas...');
                 try {
@@ -72,13 +73,13 @@ async function connectToWhatsApp() {
                 } catch (err) {
                     console.error('Error al limpiar credenciales:', err.message);
                 }
-                // Permitir que empiece una nueva vinculación con un nuevo QR
-                setTimeout(connectToWhatsApp, 5000);
+                // Permitir que empiece una nueva vinculación con un nuevo QR en 3 segundos
+                setTimeout(connectToWhatsApp, 3000);
             }
         } else if (connection === 'open') {
             connectionState.connected = true;
             connectionState.qr = null;
-            console.log('¡Conexión abierta con éxito a WhatsApp!');
+            console.log('¡Conexión de WhatsApp establecida con éxito! 🎉');
         }
     });
 }
