@@ -1,10 +1,11 @@
 const express = require('express');
 const cors = require('cors');
+// Importación de fetchLatestBaileysVersion para consultar la versión dinámica
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
-const QRCodeImage = require('qrcode'); // Asegúrate de tener este paquete para renderizar imágenes en el navegador
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,7 +41,7 @@ async function connectToWhatsApp() {
         // Inicializar el socket con la versión obtenida dinámicamente
         sock = makeWASocket({
             auth: state,
-            printQRInTerminal: false, // Apagamos la terminal de Railway para que no rompa caracteres
+            printQRInTerminal: false,
             browser: Browsers.macOS('Desktop'),
             version: version,
             syncFullHistory: false,
@@ -66,10 +67,14 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // Guardar el string del QR en nuestro estado para que el navegador lo pueda leer
+        // Mostrar QR si es requerido para la vinculación
         if (qr) {
             connectionState.qr = qr;
-            console.log('--- NUEVO CÓDIGO QR GENERADO: Entra a /qr en tu navegador para escanearlo ---');
+            console.log('\n--- CÓDIGO QR PARA VINCULACIÓN ---');
+            qrcode.generate(qr, { small: true }, function(qrcodeStr) {
+                console.log(qrcodeStr);
+            });
+            console.log('----------------------------------\n');
         }
 
         // Manejo de cierres y reconexión automática
@@ -91,6 +96,7 @@ async function connectToWhatsApp() {
             }
 
             if (shouldReconnect) {
+                // Timeout de 5 segundos para evitar bloqueos por spam
                 setTimeout(connectToWhatsApp, 5000);
             } else {
                 console.log('Sesión cerrada voluntariamente por el usuario. Limpiando credenciales antiguas...');
@@ -99,6 +105,7 @@ async function connectToWhatsApp() {
                 } catch (err) {
                     console.error('Error al limpiar credenciales:', err.message);
                 }
+                // Permitir que empiece una nueva vinculación con un nuevo QR en 5 segundos
                 setTimeout(connectToWhatsApp, 5000);
             }
         } else if (connection === 'open') {
@@ -111,50 +118,6 @@ async function connectToWhatsApp() {
 
 // Iniciar proceso de conexión
 connectToWhatsApp();
-
-/**
- * NUEVA RUTA: Endpoint visual para ver y escanear el QR como imagen perfecta
- */
-app.get('/qr', async(req, res) => {
-    if (connectionState.connected) {
-        return res.send('<h1>¡WhatsApp ya está conectado con éxito! 🎉</h1>');
-    }
-
-    if (!connectionState.qr) {
-        return res.send('<h1>Esperando que WhatsApp genere el código QR... Refresca en 5 segundos. 🔄</h1>');
-    }
-
-    try {
-        // Convierte el string de autenticación en una imagen QR tipo DataURL (base64)
-        const qrImageBase64 = await QRCodeImage.toDataURL(connectionState.qr);
-
-        // Renderiza un HTML simple y centrado para que lo escanees cómodamente
-        res.send(`
-            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; background-color: #f5f5f7;">
-                <div style="background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); text-align: center;">
-                    <h2 style="color: #1a8e4e; margin-bottom: 10px;">Vincular Taquería Mary 🌮</h2>
-                    <p style="color: #666; margin-bottom: 20px; font-size: 14px;">Escanea este código desde la sección "Dispositivos vinculados" en tu WhatsApp.</p>
-                    <img src="${qrImageBase64}" alt="Código QR de WhatsApp" style="width: 300px; height: 300px; display: block; margin: 0 auto;" />
-                    <p style="margin-top: 20px; font-size: 11px; color: #999;">La página se actualizará sola cuando completes la vinculación.</p>
-                </div>
-            </div>
-            <script>
-                // Monitoreo en bucle para refrescar la página cuando se conecte con éxito
-                setInterval(async () => {
-                    try {
-                        const response = await fetch('/health');
-                        const data = await response.json();
-                        if (data.whatsapp === 'CONECTADO') {
-                            location.reload();
-                        }
-                    } catch(e){}
-                }, 3000);
-            </script>
-        `);
-    } catch (err) {
-        res.status(500).send('Error al generar la imagen del código QR.');
-    }
-});
 
 /**
  * Endpoint de monitoreo del servicio (Health Check)
@@ -174,6 +137,7 @@ app.get('/health', (req, res) => {
 app.post('/enviar-mensaje', async(req, res) => {
     const { numero, mensaje } = req.body;
 
+    // 1. Validar que ambos campos existan
     if (!numero || !mensaje) {
         return res.status(400).json({
             status: 'error',
@@ -181,6 +145,7 @@ app.post('/enviar-mensaje', async(req, res) => {
         });
     }
 
+    // 2. Verificar si el bot está conectado antes de intentar enviar
     if (!connectionState.connected || !sock) {
         return res.status(503).json({
             status: 'error',
@@ -189,6 +154,7 @@ app.post('/enviar-mensaje', async(req, res) => {
     }
 
     try {
+        // 3. Limpiar el número quitando cualquier carácter no numérico
         const cleanNumber = numero.toString().replace(/\D/g, '');
 
         if (cleanNumber.length < 8) {
@@ -198,8 +164,12 @@ app.post('/enviar-mensaje', async(req, res) => {
             });
         }
 
+        // 4. Formatear al JID estándar de WhatsApp
         const jid = `${cleanNumber}@s.whatsapp.net`;
+
         console.log(`Enviando mensaje a: ${jid}`);
+
+        // 5. Enviar mensaje de texto
         const sentMsg = await sock.sendMessage(jid, { text: mensaje });
 
         return res.status(200).json({
