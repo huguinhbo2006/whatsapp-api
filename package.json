@@ -1,0 +1,19 @@
+{
+  "name": "whatsapp-baileys-service",
+  "version": "1.0.0",
+  "description": "API REST para automatizar WhatsApp mediante WebSockets con Express y Baileys",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.7",
+    "express": "^4.19.2",
+    "pino": "^9.2.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true
+}
