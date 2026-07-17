@@ -60,6 +60,8 @@ async function connectToWhatsApp() {
         if (qr) {
             connectionState.qr = qr;
             console.log('\n--- CÓDIGO QR PARA VINCULACIÓN ---');
+            console.log(`🔗 Haz clic aquí para escanear tu QR de manera limpia: https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`);
+            console.log('\nO escanéalo directamente desde la terminal:');
             qrcode.generate(qr, { small: true });
             console.log('----------------------------------\n');
         }
