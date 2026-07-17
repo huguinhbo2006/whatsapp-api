@@ -1,5 +1,5 @@
 const express = require('express');
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fs = require('fs');
@@ -30,13 +30,22 @@ async function connectToWhatsApp() {
     // Inicializar el estado de autenticación con persistencia local
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-    // Inicializar el socket con la configuración especificada para evitar error 405
+    // Obtener la última versión de WhatsApp desde los servidores de forma dinámica para evitar error 405
+    let version = [2, 3000, 1015901307]; // Fallback estable por si falla la consulta
+    try {
+        const { version: latestVersion, isLatest } = await fetchLatestBaileysVersion();
+        version = latestVersion;
+        console.log(`Usando versión de WhatsApp de Baileys: ${version.join('.')}, ¿Es la última?: ${isLatest}`);
+    } catch (err) {
+        console.warn(`No se pudo obtener la última versión de WhatsApp dinámicamente. Usando fallback: ${version.join('.')}. Error: ${err.message}`);
+    }
+
+    // Inicializar el socket con la versión dinámica y el navegador simulado
     sock = makeWASocket({
+        version,
         auth: state,
         printQRInTerminal: false,
-        browser: Browsers.macOS('Desktop'),
-        version: [2, 3000, 1015901307],
-        syncFullHistory: false,
+        browser: Browsers.ubuntu('Chrome'),
         logger: pino({ level: 'silent' })
     });
 
@@ -64,7 +73,7 @@ async function connectToWhatsApp() {
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
             if (statusCode === 405) {
-                console.error('¡ADVERTENCIA CRÍTICA!: Se recibió el Status Code 405 (Versión rechazada por WhatsApp). Reintentando conexión con la versión web simulada en 5 segundos...');
+                console.error('¡ADVERTENCIA CRÍTICA!: Se recibió el Status Code 405 (Versión rechazada por WhatsApp). Reintentando conexión en 5 segundos con una nueva consulta de versión...');
             } else {
                 console.log(`Conexión cerrada. Código de estado: ${statusCode}. Intentando reconectar: ${shouldReconnect}`);
             }
