@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
+// Importación de fetchLatestBaileysVersion para consultar la versión dinámica
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fs = require('fs');
@@ -9,7 +10,7 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middlewares para procesar JSON, datos de formularios y CORS
+// Middlewares para procesar JSON, datos de formularios y habilitar CORS para tu Landing
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -32,15 +33,32 @@ async function connectToWhatsApp() {
     // Inicializar el estado de autenticación con persistencia local
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-    // Inicializar el socket con la configuración especificada para evitar error 405
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        browser: Browsers.macOS('Desktop'),
-        version: [2, 3000, 1015901307],
-        syncFullHistory: false,
-        logger: pino({ level: 'silent' })
-    });
+    try {
+        // Obtener dinámicamente la última versión web de WhatsApp para evitar el error 405
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        console.log(`Usando versión de WhatsApp Web oficial: ${version.join('.')}. ¿Es la última disponible?: ${isLatest}`);
+
+        // Inicializar el socket con la versión obtenida dinámicamente
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            browser: Browsers.macOS('Desktop'),
+            version: version,
+            syncFullHistory: false,
+            logger: pino({ level: 'silent' })
+        });
+    } catch (vError) {
+        console.error('Error al recuperar la versión de Baileys desde los servidores:', vError.message);
+        console.log('Intentando conectar con una versión por defecto para recuperación...');
+
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            browser: Browsers.macOS('Desktop'),
+            syncFullHistory: false,
+            logger: pino({ level: 'silent' })
+        });
+    }
 
     // Guardar credenciales cada vez que cambien o se actualicen
     sock.ev.on('creds.update', saveCreds);
@@ -61,8 +79,12 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             connectionState.connected = false;
 
-            // Extracción estricta del código de estado de desconexión
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            // Extracción clásica sin operadores ?. para evitar problemas con el formateador de tu editor
+            let statusCode = null;
+            if (lastDisconnect && lastDisconnect.error && lastDisconnect.error.output) {
+                statusCode = lastDisconnect.error.output.statusCode;
+            }
+
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
             if (statusCode === 405) {
