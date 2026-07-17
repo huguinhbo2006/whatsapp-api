@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "latest",
+    "cors": "^2.8.6",
     "express": "^4.19.2",
     "pino": "^9.2.0",
     "qrcode-terminal": "^0.12.0"

@@ -1,5 +1,6 @@
 const express = require('express');
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const cors = require('cors');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fs = require('fs');
@@ -8,7 +9,8 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middlewares para procesar JSON y datos de formularios
+// Middlewares para procesar JSON, datos de formularios y CORS
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -30,22 +32,13 @@ async function connectToWhatsApp() {
     // Inicializar el estado de autenticación con persistencia local
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-    // Obtener la última versión de WhatsApp desde los servidores de forma dinámica para evitar error 405
-    let version = [2, 3000, 1015901307]; // Fallback estable por si falla la consulta
-    try {
-        const { version: latestVersion, isLatest } = await fetchLatestBaileysVersion();
-        version = latestVersion;
-        console.log(`Usando versión de WhatsApp de Baileys: ${version.join('.')}, ¿Es la última?: ${isLatest}`);
-    } catch (err) {
-        console.warn(`No se pudo obtener la última versión de WhatsApp dinámicamente. Usando fallback: ${version.join('.')}. Error: ${err.message}`);
-    }
-
-    // Inicializar el socket con la versión dinámica y el navegador simulado
+    // Inicializar el socket con la configuración especificada para evitar error 405
     sock = makeWASocket({
-        version,
         auth: state,
         printQRInTerminal: false,
-        browser: Browsers.ubuntu('Chrome'),
+        browser: Browsers.macOS('Desktop'),
+        version: [2, 3000, 1015901307],
+        syncFullHistory: false,
         logger: pino({ level: 'silent' })
     });
 
@@ -60,8 +53,6 @@ async function connectToWhatsApp() {
         if (qr) {
             connectionState.qr = qr;
             console.log('\n--- CÓDIGO QR PARA VINCULACIÓN ---');
-            console.log(`🔗 Haz clic aquí para escanear tu QR de manera limpia: https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`);
-            console.log('\nO escanéalo directamente desde la terminal:');
             qrcode.generate(qr, { small: true });
             console.log('----------------------------------\n');
         }
@@ -69,13 +60,13 @@ async function connectToWhatsApp() {
         // Manejo de cierres y reconexión automática
         if (connection === 'close') {
             connectionState.connected = false;
-            
+
             // Extracción estricta del código de estado de desconexión
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
             if (statusCode === 405) {
-                console.error('¡ADVERTENCIA CRÍTICA!: Se recibió el Status Code 405 (Versión rechazada por WhatsApp). Reintentando conexión en 5 segundos con una nueva consulta de versión...');
+                console.error('¡ADVERTENCIA CRÍTICA!: Se recibió el Status Code 405 (Versión rechazada por WhatsApp). Reintentando conexión con la versión web simulada en 5 segundos...');
             } else {
                 console.log(`Conexión cerrada. Código de estado: ${statusCode}. Intentando reconectar: ${shouldReconnect}`);
             }
@@ -119,7 +110,7 @@ app.get('/health', (req, res) => {
  * Endpoint POST '/enviar-mensaje'
  * Recibe un JSON en el body con 'numero' y 'mensaje'.
  */
-app.post('/enviar-mensaje', async (req, res) => {
+app.post('/enviar-mensaje', async(req, res) => {
     const { numero, mensaje } = req.body;
 
     // 1. Validar que ambos campos existan
