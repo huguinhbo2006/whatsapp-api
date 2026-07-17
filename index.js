@@ -34,7 +34,9 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        browser: Browsers.ubuntu('Chrome'),
+        browser: Browsers.macOS('Desktop'),
+        version: [2, 3000, 1015901307],
+        syncFullHistory: false,
         logger: pino({ level: 'silent' })
     });
 
@@ -61,11 +63,15 @@ async function connectToWhatsApp() {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-            console.log(`Conexión cerrada. Código de estado: ${statusCode}. Intentando reconectar: ${shouldReconnect}`);
+            if (statusCode === 405) {
+                console.error('¡ADVERTENCIA CRÍTICA!: Se recibió el Status Code 405 (Versión rechazada por WhatsApp). Reintentando conexión con la versión web simulada en 5 segundos...');
+            } else {
+                console.log(`Conexión cerrada. Código de estado: ${statusCode}. Intentando reconectar: ${shouldReconnect}`);
+            }
 
             if (shouldReconnect) {
-                // Timeout de 3 segundos para evitar bucles infinitos agresivos
-                setTimeout(connectToWhatsApp, 3000);
+                // Timeout de 5 segundos para evitar bloqueos por spam
+                setTimeout(connectToWhatsApp, 5000);
             } else {
                 console.log('Sesión cerrada voluntariamente por el usuario. Limpiando credenciales antiguas...');
                 try {
@@ -73,8 +79,8 @@ async function connectToWhatsApp() {
                 } catch (err) {
                     console.error('Error al limpiar credenciales:', err.message);
                 }
-                // Permitir que empiece una nueva vinculación con un nuevo QR en 3 segundos
-                setTimeout(connectToWhatsApp, 3000);
+                // Permitir que empiece una nueva vinculación con un nuevo QR en 5 segundos
+                setTimeout(connectToWhatsApp, 5000);
             }
         } else if (connection === 'open') {
             connectionState.connected = true;
