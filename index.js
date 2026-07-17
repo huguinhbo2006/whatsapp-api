@@ -35,15 +35,17 @@ async function connectToWhatsApp() {
     // Creamos el socket de WhatsApp
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false, // Desactivamos el comportamiento por defecto para controlarlo nosotros
-        logger: pino({ level: 'silent' }) // Nivel de log para no saturar la consola de Railway con debug de red
+        logger: pino({ level: 'silent' }), // Silencia logs innecesarios
+        printQRInTerminal: false,
+        // 🌟 AÑADE ESTA LÍNEA PARA EVITAR EL ERROR 405:
+        browser: ['Ubuntu', 'Chrome', '20.0.04']
     });
 
     // Escuchar actualizaciones de credenciales para persistirlas
     sock.ev.on('creds.update', saveCreds);
 
     // Escuchar el estado de la conexión
-    sock.ev.on('connection.update', async (update) => {
+    sock.ev.on('connection.update', async(update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
@@ -56,11 +58,11 @@ async function connectToWhatsApp() {
 
         if (connection === 'close') {
             connectionState.connected = false;
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const statusCode = lastDisconnect ? .error ? .output ? .statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
             console.log(`Conexión cerrada. Razón: ${lastDisconnect?.error?.message || 'Desconocida'} (Status Code: ${statusCode})`);
-            
+
             if (shouldReconnect) {
                 console.log('Intentando reconexión automática en 5 segundos...');
                 setTimeout(connectToWhatsApp, 5000);
@@ -106,7 +108,7 @@ app.get('/health', (req, res) => {
  * Endpoint POST '/enviar-mensaje'
  * Recibe: { "numero": "521XXXXXXXXXX", "mensaje": "Texto del pedido" }
  */
-app.post('/enviar-mensaje', async (req, res) => {
+app.post('/enviar-mensaje', async(req, res) => {
     const { numero, mensaje } = req.body;
 
     // 1. Validación básica de campos
