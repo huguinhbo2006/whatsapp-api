@@ -71,7 +71,9 @@ async function connectToWhatsApp() {
         if (qr) {
             connectionState.qr = qr;
             console.log('\n--- CÓDIGO QR PARA VINCULACIÓN ---');
-            qrcode.generate(qr, { small: true });
+            qrcode.generate(qr, { small: true }, function(qrcodeStr) {
+                console.log(qrcodeStr);
+            });
             console.log('----------------------------------\n');
         }
 
