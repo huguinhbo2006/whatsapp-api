@@ -233,19 +233,27 @@ class SessionManager {
         const jid = cleanNumber.includes('@') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
 
         let messagePayload;
-        if (options.mediaUrl) {
-            // Envío con imagen o documento
-            const mimetype = options.mimetype || 'image/jpeg';
-            if (options.type === 'document' || mimetype === 'application/pdf') {
+        if (options.mediaUrl || options.mediaBase64) {
+            const mimetype = options.mimetype || 'application/pdf';
+            let contentSource;
+
+            if (options.mediaBase64) {
+                const cleanBase64 = options.mediaBase64.replace(/^data:[^;]+;base64,/, '');
+                contentSource = Buffer.from(cleanBase64, 'base64');
+            } else {
+                contentSource = { url: options.mediaUrl };
+            }
+
+            if (options.type === 'document' || mimetype === 'application/pdf' || (options.fileName && options.fileName.endsWith('.pdf'))) {
                 messagePayload = {
-                    document: { url: options.mediaUrl },
+                    document: contentSource,
                     mimetype: mimetype,
                     fileName: options.fileName || 'archivo.pdf',
                     caption: text || undefined
                 };
             } else {
                 messagePayload = {
-                    image: { url: options.mediaUrl },
+                    image: contentSource,
                     caption: text || undefined
                 };
             }

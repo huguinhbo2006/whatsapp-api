@@ -6,8 +6,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 /**
  * 1. Health check global
@@ -344,22 +344,24 @@ app.post('/sessions/:sessionId/send-message', async (req, res) => {
  */
 app.post('/sessions/:sessionId/send-media', async (req, res) => {
     const { sessionId } = req.params;
-    const { numero, to, mediaUrl, caption, text, type, fileName, mimetype } = req.body;
+    const { numero, to, mediaUrl, mediaBase64, caption, text, type, fileName, mimetype } = req.body;
 
     const recipient = numero || to;
-    if (!recipient || !mediaUrl) {
+    if (!recipient || (!mediaUrl && !mediaBase64)) {
         return res.status(400).json({
             success: false,
-            error: 'Los parámetros "numero" y "mediaUrl" son obligatorios.'
+            error: 'Los parámetros "numero" y ("mediaUrl" o "mediaBase64") son obligatorios.'
         });
     }
 
     try {
+        const isPdf = (fileName && fileName.endsWith('.pdf')) || mimetype === 'application/pdf' || (mediaUrl && mediaUrl.endsWith('.pdf'));
         const result = await sessionManager.sendMessage(sessionId, recipient, caption || text || '', {
             mediaUrl,
-            type: type || (mediaUrl.endsWith('.pdf') ? 'document' : 'image'),
-            fileName: fileName || (mediaUrl.endsWith('.pdf') ? 'documento.pdf' : 'imagen.jpg'),
-            mimetype: mimetype || (mediaUrl.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg')
+            mediaBase64,
+            type: type || (isPdf ? 'document' : 'image'),
+            fileName: fileName || (isPdf ? 'documento.pdf' : 'archivo.dat'),
+            mimetype: mimetype || (isPdf ? 'application/pdf' : 'image/jpeg')
         });
 
         res.json({
