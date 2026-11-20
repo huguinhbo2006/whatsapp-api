@@ -86,13 +86,23 @@ http://localhost:3000/sessions/NOMBRE_DE_SESION/qr-view
 
 ### 6. Enviar Archivo / PDF / Imagen
 * **`POST /sessions/:sessionId/send-media`**
-* **Body (JSON):**
+* **Body con URL (JSON):**
   ```json
   {
     "numero": "5213312345678",
     "mediaUrl": "https://api-pedidos.taqueriamary.com/orders/12/pdf",
     "caption": "Adjunto tu comprobante de compra en PDF",
     "fileName": "ticket-pedido.pdf",
+    "mimetype": "application/pdf"
+  }
+  ```
+* **Body con Base64 directo (JSON):**
+  ```json
+  {
+    "numero": "5213312345678",
+    "mediaBase64": "JVBERi0xLjQKJ...",
+    "caption": "Ticket oficial de Taquería Mary",
+    "fileName": "ticket-PED-123.pdf",
     "mimetype": "application/pdf"
   }
   ```
