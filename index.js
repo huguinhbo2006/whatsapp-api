@@ -1,194 +1,478 @@
 const express = require('express');
 const cors = require('cors');
-// Importación de fetchLatestBaileysVersion para consultar la versión dinámica
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
-const pino = require('pino');
-const fs = require('fs');
-const path = require('path');
+const sessionManager = require('./session-manager');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middlewares para procesar JSON, datos de formularios y habilitar CORS para tu Landing
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Variables de estado del socket
-let sock = null;
-let connectionState = {
-    connected: false,
-    qr: null
-};
-
-const AUTH_DIR = path.join(__dirname, 'auth_info');
-
 /**
- * Inicializa y gestiona la conexión con los WebSockets de WhatsApp.
- */
-async function connectToWhatsApp() {
-    console.log('Inicializando conexión con WhatsApp...');
-
-    // Inicializar el estado de autenticación con persistencia local
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-
-    try {
-        // Obtener dinámicamente la última versión web de WhatsApp para evitar el error 405
-        const { version, isLatest } = await fetchLatestBaileysVersion();
-        console.log(`Usando versión de WhatsApp Web oficial: ${version.join('.')}. ¿Es la última disponible?: ${isLatest}`);
-
-        // Inicializar el socket con la versión obtenida dinámicamente
-        sock = makeWASocket({
-            auth: state,
-            printQRInTerminal: false,
-            browser: Browsers.macOS('Desktop'),
-            version: version,
-            syncFullHistory: false,
-            logger: pino({ level: 'silent' })
-        });
-    } catch (vError) {
-        console.error('Error al recuperar la versión de Baileys desde los servidores:', vError.message);
-        console.log('Intentando conectar con una versión por defecto para recuperación...');
-
-        sock = makeWASocket({
-            auth: state,
-            printQRInTerminal: false,
-            browser: Browsers.macOS('Desktop'),
-            syncFullHistory: false,
-            logger: pino({ level: 'silent' })
-        });
-    }
-
-    // Guardar credenciales cada vez que cambien o se actualicen
-    sock.ev.on('creds.update', saveCreds);
-
-    // Monitorear actualizaciones de conexión
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        // Mostrar QR si es requerido para la vinculación
-        if (qr) {
-            connectionState.qr = qr;
-            console.log('\n--- CÓDIGO QR PARA VINCULACIÓN ---');
-            qrcode.generate(qr, { small: true }, function(qrcodeStr) {
-                console.log(qrcodeStr);
-            });
-            console.log('----------------------------------\n');
-        }
-
-        // Manejo de cierres y reconexión automática
-        if (connection === 'close') {
-            connectionState.connected = false;
-
-            // Extracción clásica sin operadores ?. para evitar problemas con el formateador de tu editor
-            let statusCode = null;
-            if (lastDisconnect && lastDisconnect.error && lastDisconnect.error.output) {
-                statusCode = lastDisconnect.error.output.statusCode;
-            }
-
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-            if (statusCode === 405) {
-                console.error('¡ADVERTENCIA CRÍTICA!: Se recibió el Status Code 405 (Versión rechazada por WhatsApp). Reintentando conexión con la versión web simulada en 5 segundos...');
-            } else {
-                console.log(`Conexión cerrada. Código de estado: ${statusCode}. Intentando reconectar: ${shouldReconnect}`);
-            }
-
-            if (shouldReconnect) {
-                // Timeout de 5 segundos para evitar bloqueos por spam
-                setTimeout(connectToWhatsApp, 5000);
-            } else {
-                console.log('Sesión cerrada voluntariamente por el usuario. Limpiando credenciales antiguas...');
-                try {
-                    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-                } catch (err) {
-                    console.error('Error al limpiar credenciales:', err.message);
-                }
-                // Permitir que empiece una nueva vinculación con un nuevo QR en 5 segundos
-                setTimeout(connectToWhatsApp, 5000);
-            }
-        } else if (connection === 'open') {
-            connectionState.connected = true;
-            connectionState.qr = null;
-            console.log('¡Conexión de WhatsApp establecida con éxito! 🎉');
-        }
-    });
-}
-
-// Iniciar proceso de conexión
-connectToWhatsApp();
-
-/**
- * Endpoint de monitoreo del servicio (Health Check)
+ * 1. Health check global
  */
 app.get('/health', (req, res) => {
+    const list = sessionManager.listSessions();
+    const connectedCount = list.filter((s) => s.status === 'CONNECTED').length;
+
     res.status(200).json({
         status: 'OK',
-        whatsapp: connectionState.connected ? 'CONECTADO' : 'DESCONECTADO',
-        esperando_qr: !!connectionState.qr
+        uptime_seconds: Math.floor(process.uptime()),
+        total_sessions: list.length,
+        connected_sessions: connectedCount,
+        sessions: list
     });
 });
 
 /**
- * Endpoint POST '/enviar-mensaje'
- * Recibe un JSON en el body con 'numero' y 'mensaje'.
+ * 2. Listar todas las sesiones
  */
-app.post('/enviar-mensaje', async(req, res) => {
-    const { numero, mensaje } = req.body;
+app.get('/sessions', (req, res) => {
+    const sessions = sessionManager.listSessions();
+    res.json({
+        count: sessions.length,
+        sessions
+    });
+});
 
-    // 1. Validar que ambos campos existan
-    if (!numero || !mensaje) {
-        return res.status(400).json({
-            status: 'error',
-            error: 'Los parámetros "numero" y "mensaje" son requeridos.'
-        });
-    }
-
-    // 2. Verificar si el bot está conectado antes de intentar enviar
-    if (!connectionState.connected || !sock) {
-        return res.status(503).json({
-            status: 'error',
-            error: 'La API de WhatsApp no está conectada o lista. Por favor vincula tu cuenta.'
-        });
-    }
-
+/**
+ * 3. Iniciar o conectar una sesión (por ID)
+ * Si la sesión no existe, se inicia y genera un QR nuevo.
+ */
+app.post('/sessions/:sessionId/start', async (req, res) => {
     try {
-        // 3. Limpiar el número quitando cualquier carácter no numérico
-        const cleanNumber = numero.toString().replace(/\D/g, '');
+        const sessionId = req.params.sessionId;
+        const session = await sessionManager.initSession(sessionId);
 
-        if (cleanNumber.length < 8) {
-            return res.status(400).json({
-                status: 'error',
-                error: 'El número de teléfono provisto no tiene un formato válido.'
-            });
-        }
-
-        // 4. Formatear al JID estándar de WhatsApp
-        const jid = `${cleanNumber}@s.whatsapp.net`;
-
-        console.log(`Enviando mensaje a: ${jid}`);
-
-        // 5. Enviar mensaje de texto
-        const sentMsg = await sock.sendMessage(jid, { text: mensaje });
-
-        return res.status(200).json({
-            status: 'success',
-            message: 'Mensaje enviado exitosamente',
-            messageId: sentMsg.key.id
+        res.json({
+            success: true,
+            sessionId: session.id,
+            status: session.status,
+            phone: session.phone,
+            qrImage: session.qrDataUrl,
+            qrRaw: session.qrRaw,
+            qrViewUrl: `/sessions/${session.id}/qr-view`
         });
-
-    } catch (error) {
-        console.error('Error al enviar el mensaje:', error);
-        return res.status(500).json({
-            status: 'error',
-            error: 'No se pudo enviar el mensaje a través de WhatsApp.',
-            details: error.message
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            error: err.message
         });
     }
 });
 
-// Iniciar servidor Express en el puerto configurado
-app.listen(PORT, () => {
-    console.log(`Servidor de WhatsApp Express escuchando en el puerto ${PORT}`);
+/**
+ * 4. Obtener estado de una sesión
+ */
+app.get('/sessions/:sessionId/status', (req, res) => {
+    const session = sessionManager.getSession(req.params.sessionId);
+    if (!session) {
+        return res.status(404).json({
+            success: false,
+            error: `La sesión '${req.params.sessionId}' no existe. Iníciala con POST /sessions/${req.params.sessionId}/start.`
+        });
+    }
+
+    res.json({
+        sessionId: session.id,
+        status: session.status,
+        phone: session.phone,
+        name: session.name,
+        connectedAt: session.connectedAt,
+        hasQr: !!session.qrRaw
+    });
+});
+
+/**
+ * 5. Obtener el código QR en JSON (DataURL base64 y raw string)
+ */
+app.get('/sessions/:sessionId/qr', async (req, res) => {
+    try {
+        let session = sessionManager.getSession(req.params.sessionId);
+        if (!session) {
+            // Inicializar automáticamente si se solicita el QR
+            session = await sessionManager.initSession(req.params.sessionId);
+        }
+
+        if (session.status === 'CONNECTED') {
+            return res.json({
+                sessionId: session.id,
+                status: 'CONNECTED',
+                message: 'Esta sesión ya está conectada a WhatsApp.',
+                phone: session.phone
+            });
+        }
+
+        res.json({
+            sessionId: session.id,
+            status: session.status,
+            qrRaw: session.qrRaw,
+            qrImage: session.qrDataUrl
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+/**
+ * 6. Vista Web Visual del QR para escanear en navegador (/sessions/:sessionId/qr-view)
+ */
+app.get('/sessions/:sessionId/qr-view', async (req, res) => {
+    const sessionId = req.params.sessionId;
+    let session = sessionManager.getSession(sessionId);
+
+    if (!session) {
+        try {
+            session = await sessionManager.initSession(sessionId);
+        } catch (err) {
+            return res.status(500).send(`<h3>Error al inicializar sesión: ${err.message}</h3>`);
+        }
+    }
+
+    const html = `
+    <!doctype html>
+    <html lang="es">
+    <head>
+      <meta charset="utf-8">
+      <title>Conectar WhatsApp — ${sessionId}</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        * { box-sizing: border-box; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          background: #f0f2f5;
+          margin: 0;
+          padding: 24px 16px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 100vh;
+          color: #111b21;
+        }
+        .card {
+          background: #fff;
+          border-radius: 16px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+          max-width: 440px;
+          width: 100%;
+          padding: 28px;
+          text-align: center;
+        }
+        .header {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          margin-bottom: 12px;
+        }
+        .logo { font-size: 2.2rem; }
+        h1 { margin: 0; font-size: 1.35rem; }
+        .session-badge {
+          display: inline-block;
+          background: #e7f8ee;
+          color: #008040;
+          font-weight: 700;
+          padding: 3px 10px;
+          border-radius: 999px;
+          font-size: 0.85rem;
+          margin-bottom: 16px;
+        }
+        .qr-wrap {
+          margin: 18px 0;
+          min-height: 260px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: #fafafa;
+          border-radius: 12px;
+          border: 1px dashed #d1d7db;
+          padding: 12px;
+        }
+        .qr-img {
+          width: 250px;
+          height: 250px;
+          border-radius: 8px;
+        }
+        .steps {
+          text-align: left;
+          font-size: 0.9rem;
+          color: #3b4a54;
+          line-height: 1.5;
+          margin: 16px 0;
+          padding-left: 20px;
+        }
+        .status-box {
+          padding: 10px 14px;
+          border-radius: 8px;
+          font-weight: 600;
+          font-size: 0.9rem;
+          margin-top: 14px;
+        }
+        .status-connected { background: #d1fae5; color: #065f46; }
+        .status-waiting { background: #fef3c7; color: #92400e; }
+        .btn-logout {
+          background: #fee2e2;
+          color: #991b1b;
+          border: none;
+          padding: 8px 16px;
+          font-weight: 700;
+          border-radius: 8px;
+          cursor: pointer;
+          margin-top: 12px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="header">
+          <span class="logo">💬</span>
+          <h1>Conectar WhatsApp</h1>
+        </div>
+        <div class="session-badge">Sesión: <strong>${sessionId}</strong></div>
+
+        <div id="content">
+          <p style="color:#54656f; font-size: 0.9rem;">Cargando estado...</p>
+        </div>
+
+        <ol class="steps">
+          <li>Abre <strong>WhatsApp</strong> en tu teléfono.</li>
+          <li>Toca <strong>Menú ⋮</strong> o <strong>Ajustes ⚙️</strong>.</li>
+          <li>Toca <strong>Dispositivos vinculados</strong> y luego <strong>Vincular un dispositivo</strong>.</li>
+          <li>Apunta tu teléfono a esta pantalla para escanear el código.</li>
+        </ol>
+      </div>
+
+      <script>
+        const sessionId = ${JSON.stringify(sessionId)};
+        const contentDiv = document.getElementById('content');
+
+        async function refreshStatus() {
+          try {
+            const res = await fetch('/sessions/' + sessionId + '/qr');
+            const data = await res.json();
+
+            if (data.status === 'CONNECTED') {
+              contentDiv.innerHTML = \`
+                <div class="status-box status-connected">
+                  ✅ ¡Conectado con éxito!
+                  <div style="font-size: 1.05rem; margin-top: 4px;">Número: +<strong>\${data.phone || 'Vinculado'}</strong></div>
+                </div>
+                <button class="btn-logout" onclick="logoutSession()">Desvincular sesión</button>
+              \`;
+            } else if (data.qrImage) {
+              contentDiv.innerHTML = \`
+                <div class="qr-wrap">
+                  <img class="qr-img" src="\${data.qrImage}" alt="Código QR de WhatsApp" />
+                </div>
+                <div class="status-box status-waiting">⏳ Esperando escaneo con tu teléfono...</div>
+              \`;
+            } else {
+              contentDiv.innerHTML = \`
+                <div class="qr-wrap">
+                  <p style="color:#667781;">Generando código QR... espera un momento.</p>
+                </div>
+              \`;
+            }
+          } catch (e) {
+            contentDiv.innerHTML = '<p style="color:red;">Error de conexión con el servidor.</p>';
+          }
+        }
+
+        async function logoutSession() {
+          if (!confirm('¿Deseas desvincular este número de WhatsApp?')) return;
+          await fetch('/sessions/' + sessionId + '/logout', { method: 'POST' });
+          location.reload();
+        }
+
+        refreshStatus();
+        setInterval(refreshStatus, 3000);
+      </script>
+    </body>
+    </html>
+    `;
+
+    res.send(html);
+});
+
+/**
+ * 7. Enviar mensaje de texto desde una sesión específica
+ * POST /sessions/:sessionId/send-message
+ * Body: { "numero": "5213312345678", "mensaje": "Hola!" }
+ */
+app.post('/sessions/:sessionId/send-message', async (req, res) => {
+    const { sessionId } = req.params;
+    const { numero, to, mensaje, text } = req.body;
+
+    const recipient = numero || to;
+    const messageText = mensaje || text;
+
+    if (!recipient || !messageText) {
+        return res.status(400).json({
+            success: false,
+            error: 'Los parámetros "numero" (o "to") y "mensaje" (o "text") son obligatorios.'
+        });
+    }
+
+    try {
+        const result = await sessionManager.sendMessage(sessionId, recipient, messageText);
+        res.json({
+            success: true,
+            sessionId,
+            ...result
+        });
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            sessionId,
+            error: err.message
+        });
+    }
+});
+
+/**
+ * 8. Enviar imagen o archivo / PDF desde una sesión específica
+ * POST /sessions/:sessionId/send-media
+ * Body: {
+ *   "numero": "5213312345678",
+ *   "mediaUrl": "https://midominio.com/ticket.pdf",
+ *   "caption": "Tu comprobante de compra",
+ *   "type": "document" | "image",
+ *   "fileName": "ticket.pdf",
+ *   "mimetype": "application/pdf"
+ * }
+ */
+app.post('/sessions/:sessionId/send-media', async (req, res) => {
+    const { sessionId } = req.params;
+    const { numero, to, mediaUrl, caption, text, type, fileName, mimetype } = req.body;
+
+    const recipient = numero || to;
+    if (!recipient || !mediaUrl) {
+        return res.status(400).json({
+            success: false,
+            error: 'Los parámetros "numero" y "mediaUrl" son obligatorios.'
+        });
+    }
+
+    try {
+        const result = await sessionManager.sendMessage(sessionId, recipient, caption || text || '', {
+            mediaUrl,
+            type: type || (mediaUrl.endsWith('.pdf') ? 'document' : 'image'),
+            fileName: fileName || (mediaUrl.endsWith('.pdf') ? 'documento.pdf' : 'imagen.jpg'),
+            mimetype: mimetype || (mediaUrl.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg')
+        });
+
+        res.json({
+            success: true,
+            sessionId,
+            ...result
+        });
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            sessionId,
+            error: err.message
+        });
+    }
+});
+
+/**
+ * 9. Desvincular y eliminar una sesión
+ * POST /sessions/:sessionId/logout o DELETE /sessions/:sessionId
+ */
+const logoutHandler = async (req, res) => {
+    try {
+        const result = await sessionManager.deleteSession(req.params.sessionId);
+        res.json({
+            success: true,
+            message: `Sesión '${req.params.sessionId}' cerrada y credenciales eliminadas.`,
+            ...result
+        });
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
+};
+
+app.post('/sessions/:sessionId/logout', logoutHandler);
+app.delete('/sessions/:sessionId', logoutHandler);
+
+/**
+ * 10. Endpoint heredado /enviar-mensaje (compatibilidad hacia atrás)
+ * Busca la sesión indicada en header x-session-id o body.sessionId;
+ * si no se especifica, usa la primera sesión conectada o 'default'.
+ */
+app.post('/enviar-mensaje', async (req, res) => {
+    const { numero, mensaje } = req.body;
+    let targetSessionId = req.headers['x-session-id'] || req.body.sessionId;
+
+    if (!targetSessionId) {
+        // Buscar la primera sesión que esté conectada
+        const all = sessionManager.listSessions();
+        const connected = all.find((s) => s.status === 'CONNECTED');
+        targetSessionId = connected ? connected.sessionId : 'default';
+    }
+
+    try {
+        const result = await sessionManager.sendMessage(targetSessionId, numero, mensaje);
+        return res.status(200).json({
+            status: 'success',
+            sessionId: targetSessionId,
+            message: 'Mensaje enviado exitosamente',
+            messageId: result.messageId
+        });
+    } catch (error) {
+        return res.status(500).json({
+            status: 'error',
+            sessionId: targetSessionId,
+            error: error.message
+        });
+    }
+});
+
+/**
+ * Página principal de bienvenida con guía de uso rápida
+ */
+app.get('/', (req, res) => {
+    const sessions = sessionManager.listSessions();
+    res.send(`
+      <!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>WhatsApp Multi-Session API</title>
+        <style>
+          body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }
+          code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+          pre { background: #1e293b; color: #f8fafc; padding: 14px; border-radius: 8px; overflow-x: auto; }
+          .tag { background: #0284c7; color: #fff; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; }
+        </style>
+      </head>
+      <body>
+        <h1>🚀 WhatsApp Multi-Session API</h1>
+        <p>API REST para conectar múltiples números de WhatsApp simultáneamente con Baileys.</p>
+        
+        <h3>Sesiones actuales (${sessions.length}):</h3>
+        <ul>
+          ${sessions.length === 0 ? '<li>Ninguna sesión activa. Crea una en <code>/sessions/TU_NOMBRE/qr-view</code></li>' : ''}
+          ${sessions.map((s) => `<li><strong>${s.sessionId}</strong> — Estado: <code>${s.status}</code> ${s.phone ? `(+${s.phone})` : ''} · <a href="/sessions/${s.sessionId}/qr-view">Ver QR</a></li>`).join('')}
+        </ul>
+
+        <h3>Cómo conectar un nuevo número:</h3>
+        <p>Abre en tu navegador la URL: <br><code>http://localhost:${PORT}/sessions/NOMBRE_DE_SESION/qr-view</code></p>
+      </body>
+      </html>
+    `);
+});
+
+// Iniciar servidor y auto-restaurar sesiones previas guardadas
+app.listen(PORT, async () => {
+    console.log(`====================================================`);
+    console.log(` Servidor WhatsApp Multi-Session activo en puerto ${PORT}`);
+    console.log(` URL de control: http://localhost:${PORT}/`);
+    console.log(`====================================================`);
+
+    await sessionManager.autoRestoreSessions();
 });
