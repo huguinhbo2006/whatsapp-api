@@ -58,6 +58,16 @@ class SessionManager {
             if (existing.status === 'CONNECTED' && existing.sock) {
                 return existing;
             }
+            if (existing.sock) {
+                try {
+                    existing.isClosing = true;
+                    existing.sock.ev?.removeAllListeners?.('connection.update');
+                    existing.sock.ev?.removeAllListeners?.('creds.update');
+                    existing.sock.end(undefined);
+                } catch (e) {
+                    // ignorar error al cerrar socket previo
+                }
+            }
         }
 
         const sessionDir = this.getSessionDir(sessionId);
@@ -215,6 +225,72 @@ class SessionManager {
     }
 
     /**
+     * Genera candidatos de marcación para verificar existencia en WhatsApp (resolviendo 52 vs 521 en México)
+     */
+    buildPhoneCandidates(rawInput) {
+        const cleanNumber = rawInput.toString().replace(/@.*$/, '').replace(/\D/g, '');
+        if (cleanNumber.length < 8) {
+            const err = new Error(`El número '${rawInput}' no tiene un formato válido (mínimo 8 dígitos).`);
+            err.statusCode = 422;
+            throw err;
+        }
+
+        const candidates = [];
+        if (cleanNumber.length === 10) {
+            candidates.push(`521${cleanNumber}`, `52${cleanNumber}`);
+        } else if (cleanNumber.length === 13 && cleanNumber.startsWith('521')) {
+            candidates.push(cleanNumber, `52${cleanNumber.slice(3)}`);
+        } else if (cleanNumber.length === 12 && cleanNumber.startsWith('52')) {
+            candidates.push(`521${cleanNumber.slice(2)}`, cleanNumber);
+        } else {
+            candidates.push(cleanNumber);
+        }
+
+        return { cleanNumber, candidates: [...new Set(candidates)] };
+    }
+
+    /**
+     * Verifica si un número está registrado en WhatsApp y devuelve su JID oficial
+     */
+    async checkNumber(rawSessionId, to) {
+        const sessionId = this.sanitizeId(rawSessionId);
+        const session = this.sessions.get(sessionId);
+
+        if (!session || session.status !== 'CONNECTED' || !session.sock) {
+            const err = new Error(`La sesión '${sessionId}' no está conectada a WhatsApp.`);
+            err.statusCode = 422;
+            throw err;
+        }
+
+        const rawStr = to ? to.toString().trim() : '';
+        if (rawStr.endsWith('@g.us')) {
+            return { exists: true, jid: rawStr, number: rawStr, checked: [rawStr] };
+        }
+
+        const { cleanNumber, candidates } = this.buildPhoneCandidates(rawStr);
+        const checks = await session.sock.onWhatsApp(...candidates);
+        const match = Array.isArray(checks) ? checks.find((item) => item && item.exists) : null;
+
+        if (match) {
+            return {
+                exists: true,
+                jid: match.jid,
+                number: match.jid.split('@')[0],
+                input: cleanNumber,
+                checked: candidates
+            };
+        }
+
+        return {
+            exists: false,
+            jid: null,
+            number: null,
+            input: cleanNumber,
+            checked: candidates
+        };
+    }
+
+    /**
      * Envía un mensaje de texto o multimedia a través de una sesión específica
      */
     async sendMessage(rawSessionId, to, text, options = {}) {
@@ -222,15 +298,20 @@ class SessionManager {
         const session = this.sessions.get(sessionId);
 
         if (!session || session.status !== 'CONNECTED' || !session.sock) {
-            throw new Error(`La sesión '${sessionId}' no está conectada a WhatsApp.`);
+            const err = new Error(`La sesión '${sessionId}' no está conectada a WhatsApp.`);
+            err.statusCode = 422;
+            throw err;
         }
 
-        const cleanNumber = to.toString().replace(/\D/g, '');
-        if (cleanNumber.length < 8) {
-            throw new Error(`El número '${to}' no tiene un formato internacional válido.`);
+        const check = await this.checkNumber(sessionId, to);
+        if (!check.exists || !check.jid) {
+            const err = new Error(`El número '${check.input || to}' no está registrado en WhatsApp.`);
+            err.statusCode = 422;
+            throw err;
         }
 
-        const jid = cleanNumber.includes('@') ? cleanNumber : `${cleanNumber}@s.whatsapp.net`;
+        const jid = check.jid;
+        const cleanNumber = check.number || check.input;
 
         let messagePayload;
         if (options.mediaUrl || options.mediaBase64) {

@@ -296,6 +296,42 @@ app.get('/sessions/:sessionId/qr-view', async (req, res) => {
 });
 
 /**
+ * 6.5 Verificar si un número tiene cuenta de WhatsApp activa
+ * GET /sessions/:sessionId/check-number/:numero
+ * POST /sessions/:sessionId/check-number  Body: { "numero": "3312345678" }
+ */
+const checkNumberHandler = async (req, res) => {
+    const { sessionId } = req.params;
+    const recipient = req.params.numero || req.body?.numero || req.body?.to || req.query?.numero;
+
+    if (!recipient) {
+        return res.status(400).json({
+            success: false,
+            error: 'El parámetro "numero" es obligatorio.'
+        });
+    }
+
+    try {
+        const result = await sessionManager.checkNumber(sessionId, recipient);
+        res.json({
+            success: true,
+            sessionId,
+            ...result
+        });
+    } catch (err) {
+        const status = err.statusCode || 500;
+        res.status(status).json({
+            success: false,
+            sessionId,
+            error: err.message
+        });
+    }
+};
+
+app.get('/sessions/:sessionId/check-number/:numero', checkNumberHandler);
+app.post('/sessions/:sessionId/check-number', checkNumberHandler);
+
+/**
  * 7. Enviar mensaje de texto desde una sesión específica
  * POST /sessions/:sessionId/send-message
  * Body: { "numero": "5213312345678", "mensaje": "Hola!" }
@@ -322,7 +358,7 @@ app.post('/sessions/:sessionId/send-message', async (req, res) => {
             ...result
         });
     } catch (err) {
-        res.status(500).json({
+        res.status(err.statusCode || 500).json({
             success: false,
             sessionId,
             error: err.message
@@ -370,7 +406,7 @@ app.post('/sessions/:sessionId/send-media', async (req, res) => {
             ...result
         });
     } catch (err) {
-        res.status(500).json({
+        res.status(err.statusCode || 500).json({
             success: false,
             sessionId,
             error: err.message
@@ -426,7 +462,7 @@ app.post('/enviar-mensaje', async (req, res) => {
             messageId: result.messageId
         });
     } catch (error) {
-        return res.status(500).json({
+        return res.status(error.statusCode || 500).json({
             status: 'error',
             sessionId: targetSessionId,
             error: error.message
